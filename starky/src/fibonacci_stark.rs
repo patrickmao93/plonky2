@@ -126,6 +126,7 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use anyhow::Result;
+    use log::Level;
     use plonky2::field::extension::Extendable;
     use plonky2::field::types::Field;
     use plonky2::hash::hash_types::RichField;
@@ -133,6 +134,8 @@ mod tests {
     use plonky2::plonk::circuit_builder::CircuitBuilder;
     use plonky2::plonk::circuit_data::CircuitConfig;
     use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, PoseidonGoldilocksConfig};
+    use plonky2::timed;
+    use plonky2::util::timing;
     use plonky2::util::timing::TimingTree;
 
     use crate::config::StarkConfig;
@@ -206,21 +209,27 @@ mod tests {
         type F = <C as GenericConfig<D>>::F;
         type S = FibonacciStark<F, D>;
 
+        let mut timing_tree = TimingTree::default();
+
         let config = StarkConfig::standard_fast_config();
         let num_rows = 1 << 17;
         let public_inputs = [F::ZERO, F::ONE, fibonacci(num_rows - 1, F::ZERO, F::ONE)];
         let stark = S::new(num_rows);
+        timing_tree.push("generate stark trace", Level::Info);
         let trace = stark.generate_trace(public_inputs[0], public_inputs[1]);
+        timing_tree.pop();
         let proof = prove::<F, C, S, D>(
             stark,
             &config,
             trace,
             public_inputs,
-            &mut TimingTree::default(),
+            &mut timing_tree,
         )?;
         verify_stark_proof(stark, proof.clone(), &config)?;
 
-        recursive_proof::<F, C, S, C, D>(stark, proof, &config, true)
+        let res = recursive_proof::<F, C, S, C, D>(stark, proof, &config, true, &mut timing_tree);
+        timing_tree.print();
+        return res
     }
 
     fn recursive_proof<
@@ -234,6 +243,7 @@ mod tests {
         inner_proof: StarkProofWithPublicInputs<F, InnerC, D>,
         inner_config: &StarkConfig,
         print_gate_counts: bool,
+        timing_tree: &mut TimingTree,
     ) -> Result<()>
         where
             InnerC::Hasher: AlgebraicHasher<F>,
@@ -253,8 +263,13 @@ mod tests {
             builder.print_gate_counts(0);
         }
 
+        timing_tree.push("build plonky verifier circuit", Level::Info);
         let data = builder.build::<C>();
+        timing_tree.pop();
+
+        timing_tree.push("prove plonky verifier", Level::Info);
         let proof = data.prove(pw)?;
+        timing_tree.pop();
 
         let common_json = serde_json::to_string(&data.common).expect("failed to marshal verifier data");
         write("common_circuit_data.json", common_json.as_bytes().to_vec());
@@ -265,7 +280,11 @@ mod tests {
         let proof_json = serde_json::to_string(&proof).expect("failed to marshal proof");
         write("proof_with_public_inputs.json", proof_json.as_bytes().to_vec());
 
-        data.verify(proof)
+        timing_tree.push("verify outer proof", Level::Info);
+        let res = data.verify(proof);
+        timing_tree.pop();
+
+        return res
     }
 
     fn write(name: &str, data: Vec<u8>) {
