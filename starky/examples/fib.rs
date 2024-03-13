@@ -1,5 +1,7 @@
 #![feature(generic_const_exprs)]
 
+use std::env;
+use std::fmt::format;
 use std::fs::File;
 use std::io::Write;
 use std::marker::PhantomData;
@@ -27,6 +29,10 @@ use starky::vars::{StarkEvaluationTargets, StarkEvaluationVars};
 use starky::verifier::verify_stark_proof;
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let fib_size: usize = args.get(1).expect("require 1 argument fib k")
+        .parse().expect("cannot parse fib k");
+
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
@@ -34,7 +40,7 @@ fn main() {
 
     let mut timing_tree = TimingTree::new("fibonacci", Level::Info);
     let config = StarkConfig::standard_fast_config();
-    let num_rows = 1 << 17;
+    let num_rows = 1 << fib_size;
     let public_inputs = [F::ZERO, F::ONE, fibonacci(num_rows - 1, F::ZERO, F::ONE)];
     let stark = S::new(num_rows);
 
@@ -54,9 +60,13 @@ fn main() {
 
     let start = Instant::now();
     verify_stark_proof(stark, proof.clone(), &config).unwrap();
+
+    let proof_json = serde_json::to_string(&proof.proof).expect("to json");
+    println!("inner proof json size {}", proof_json.as_bytes().len());
+
     println!("verify inner proof took {}ms", start.elapsed().as_millis());
 
-    recursive_proof::<F, C, S, C, D>(stark, proof, &config, true, &mut timing_tree).unwrap();
+    recursive_proof::<F, C, S, C, D>(stark, proof, &config, true, &mut timing_tree, fib_size).unwrap();
     timing_tree.print();
 }
 
@@ -183,6 +193,7 @@ fn recursive_proof<
     inner_config: &StarkConfig,
     print_gate_counts: bool,
     timing_tree: &mut TimingTree,
+    fib_size: usize,
 ) -> anyhow::Result<()>
     where
         InnerC::Hasher: AlgebraicHasher<F>,
@@ -209,15 +220,18 @@ fn recursive_proof<
     let start = Instant::now();
     let proof = data.prove(pw).unwrap();
     println!("prove outer took {}ms", start.elapsed().as_millis());
+    println!("outer plonky proof size {}", proof.to_bytes().len());
 
     let common_json = serde_json::to_string(&data.common).expect("failed to marshal verifier data");
-    write("common_circuit_data.json", common_json.as_bytes().to_vec());
+    write("common_circuit_data.json", common_json.as_bytes().to_vec(), fib_size);
 
     let verifier_json = serde_json::to_string(&data.verifier_only).expect("failed to marshal verifier data");
-    write("verifier_only_circuit_data.json", verifier_json.as_bytes().to_vec());
+    write("verifier_only_circuit_data.json", verifier_json.as_bytes().to_vec(), fib_size);
 
     let proof_json = serde_json::to_string(&proof).expect("failed to marshal proof");
-    write("proof_with_public_inputs.json", proof_json.as_bytes().to_vec());
+    println!("outer plonky proof json size {}", proof_json.as_bytes().len());
+    write("proof_with_public_inputs.json", proof_json.as_bytes().to_vec(), fib_size);
+
 
     let start = Instant::now();
     let res = data.verify(proof);
@@ -227,8 +241,8 @@ fn recursive_proof<
     return res;
 }
 
-fn write(name: &str, data: Vec<u8>) {
-    let mut path = "/Users/patrickmao/repos/gnark-plonky2-verifier/testdata/fib_17/".to_string();
+fn write(name: &str, data: Vec<u8>, fib_size: usize) {
+    let mut path = format!("./fib_{}/", fib_size).to_string();
     path.push_str(name);
     let mut file = File::create(path).expect("failed to open file");
     file.write_all(&data).expect("failed to write outer proof");
