@@ -66,8 +66,8 @@ impl<F: RichField + Extendable<D>, const D: usize> Stark<F, D> for FibonacciStar
         vars: StarkEvaluationVars<FE, P, { Self::COLUMNS }, { Self::PUBLIC_INPUTS }>,
         yield_constr: &mut ConstraintConsumer<P>,
     ) where
-        FE: FieldExtension<D2, BaseField = F>,
-        P: PackedField<Scalar = FE>,
+        FE: FieldExtension<D2, BaseField=F>,
+        P: PackedField<Scalar=FE>,
     {
         // Check public inputs.
         yield_constr
@@ -123,6 +123,8 @@ impl<F: RichField + Extendable<D>, const D: usize> Stark<F, D> for FibonacciStar
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::Write;
     use anyhow::Result;
     use plonky2::field::extension::Extendable;
     use plonky2::field::types::Field;
@@ -205,7 +207,7 @@ mod tests {
         type S = FibonacciStark<F, D>;
 
         let config = StarkConfig::standard_fast_config();
-        let num_rows = 1 << 5;
+        let num_rows = 1 << 17;
         let public_inputs = [F::ZERO, F::ONE, fibonacci(num_rows - 1, F::ZERO, F::ONE)];
         let stark = S::new(num_rows);
         let trace = stark.generate_trace(public_inputs[0], public_inputs[1]);
@@ -223,9 +225,9 @@ mod tests {
 
     fn recursive_proof<
         F: RichField + Extendable<D>,
-        C: GenericConfig<D, F = F>,
+        C: GenericConfig<D, F=F>,
         S: Stark<F, D> + Copy,
-        InnerC: GenericConfig<D, F = F>,
+        InnerC: GenericConfig<D, F=F>,
         const D: usize,
     >(
         stark: S,
@@ -233,10 +235,10 @@ mod tests {
         inner_config: &StarkConfig,
         print_gate_counts: bool,
     ) -> Result<()>
-    where
-        InnerC::Hasher: AlgebraicHasher<F>,
-        [(); S::COLUMNS]:,
-        [(); S::PUBLIC_INPUTS]:,
+        where
+            InnerC::Hasher: AlgebraicHasher<F>,
+            [(); S::COLUMNS]:,
+            [(); S::PUBLIC_INPUTS]:,
     {
         let circuit_config = CircuitConfig::standard_recursion_config();
         let mut builder = CircuitBuilder::<F, D>::new(circuit_config);
@@ -253,7 +255,24 @@ mod tests {
 
         let data = builder.build::<C>();
         let proof = data.prove(pw)?;
+
+        let common_json = serde_json::to_string(&data.common).expect("failed to marshal verifier data");
+        write("common_circuit_data.json", common_json.as_bytes().to_vec());
+
+        let verifier_json = serde_json::to_string(&data.verifier_only).expect("failed to marshal verifier data");
+        write("verifier_only_circuit_data.json", verifier_json.as_bytes().to_vec());
+
+        let proof_json = serde_json::to_string(&proof).expect("failed to marshal proof");
+        write("proof_with_public_inputs.json", proof_json.as_bytes().to_vec());
+
         data.verify(proof)
+    }
+
+    fn write(name: &str, data: Vec<u8>) {
+        let mut path = "/Users/patrickmao/repos/gnark-plonky2-verifier/testdata/fib_17/".to_string();
+        path.push_str(name);
+        let mut file = File::create(path).expect("failed to open file");
+        file.write_all(&data).expect("failed to write outer proof");
     }
 
     fn init_logger() {
